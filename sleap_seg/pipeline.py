@@ -35,10 +35,11 @@ class Pipeline:
         self.seg_backend = build_backend(cfg)
         self.tracker = FusedTracker(cfg)
         self.sleap = SLEAPInferencer(
-            model_path=pose_cfg["sleap_model"],
+            model_path=pose_cfg.get("sleap_model", ""),
             peak_threshold=pose_cfg.get("peak_threshold", 0.2),
             batch_size=pose_cfg.get("batch_size", 8),
             device=device,
+            cache_path=pose_cfg.get("sleap_cache"),
         )
         self.kp_filter = KeypointFilter(
             process_noise=kalman_cfg.get("process_noise", 1e-2),

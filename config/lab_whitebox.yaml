@@ -1,0 +1,69 @@
+# SLEAP-Seg configuration for white/light-colored experimental boxes
+# (e.g. white acrylic, bright fluorescent lighting)
+#
+# Differences from default:
+#   - Higher YOLO confidence threshold (fewer false positives on bright background)
+#   - Looser Re-ID threshold (white-box animals have less contrast, harder to re-id)
+#   - Lower occlusion IoU threshold (animals easier to distinguish in bright conditions)
+
+# --- Perception ---
+perception:
+  seg_backend: "yolo"
+  yolo_model: "models/yolov8_mice.pt"   # Use custom-trained model
+  sam_checkpoint: "models/sam_vit_h.pth"
+  sam_model_type: "vit_h"
+  yolo_imgsz: 640
+  yolo_conf: 0.35                       # Higher confidence for bright background
+  yolo_fp16: false
+  sam_trigger_conf: 0.5
+
+# --- Tracking ---
+tracking:
+  bytetrack_high_thresh: 0.65
+  bytetrack_low_thresh: 0.15
+  bytetrack_match_thresh: 0.8
+  box_iou_weight: 0.5
+  mask_iou_weight: 0.5                  # Equal mask/box weight (good contrast)
+  max_lost_frames: 25
+
+# --- Re-ID ---
+reid:
+  model: "osnet_x0_25"
+  weights: "models/osnet_x0_25_market.pth"
+  embedding_dim: 512
+  cosine_threshold: 0.65                # Slightly lower (harder to re-id in bright env)
+  ema_alpha: 0.85
+
+# --- Kalman Filter ---
+kalman:
+  process_noise: 1.0e-2
+  measurement_noise: 0.8e-1             # Slightly less measurement noise (clean image)
+  initial_uncertainty: 1.0
+
+# --- Occlusion ---
+occlusion:
+  iou_threshold: 0.5                    # Lower threshold: easier to detect partial occlusion
+  priority_keypoints:
+    - "Snout"
+    - "Tail_Base"
+  smooth_window: 5
+
+# --- Pose ---
+pose:
+  sleap_model: "/Users/kuhn/Desktop/sleap/nature_social_data/fig01_behavior/02_MODEL/FVB_2023/labels.v000_run"
+  batch_size: 4
+  peak_threshold: 0.2
+
+# --- Export ---
+export:
+  output_path: "output_whitebox.slp"
+  low_confidence_threshold: 0.4
+
+# --- General ---
+device: "mps"
+num_workers: 4
+video_formats:
+  - ".mp4"
+  - ".avi"
+  - ".mov"
+  - ".mkv"

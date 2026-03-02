@@ -1,0 +1,70 @@
+# SLEAP-Seg configuration for black/dark-colored experimental boxes
+# (e.g. dark acrylic, dim red lighting for nocturnal experiments)
+#
+# Differences from default:
+#   - Lower YOLO confidence (more lenient detection in low contrast)
+#   - YOLO + SAM hybrid for better mask quality in dark conditions
+#   - Higher occlusion IoU threshold (harder to separate animals in dark)
+#   - Larger Kalman uncertainty (noisier detections)
+
+# --- Perception ---
+perception:
+  seg_backend: "yolo+sam"              # Use SAM to refine masks in low contrast
+  yolo_model: "models/yolov8_mice.pt"
+  sam_checkpoint: "models/sam_vit_h.pth"
+  sam_model_type: "vit_h"
+  yolo_imgsz: 640
+  yolo_conf: 0.20                      # Lower threshold for dark/low contrast
+  yolo_fp16: false
+  sam_trigger_conf: 0.4               # Trigger SAM more often
+
+# --- Tracking ---
+tracking:
+  bytetrack_high_thresh: 0.5
+  bytetrack_low_thresh: 0.1
+  bytetrack_match_thresh: 0.75
+  box_iou_weight: 0.4
+  mask_iou_weight: 0.6                 # Trust mask shape more in dark conditions
+  max_lost_frames: 40                  # More patience before dropping a track
+
+# --- Re-ID ---
+reid:
+  model: "osnet_x0_25"
+  weights: "models/osnet_x0_25_market.pth"
+  embedding_dim: 512
+  cosine_threshold: 0.75              # Stricter re-id (avoid false positives in dark)
+  ema_alpha: 0.9
+
+# --- Kalman Filter ---
+kalman:
+  process_noise: 2.0e-2               # More motion uncertainty in dark
+  measurement_noise: 1.5e-1           # More detection noise
+  initial_uncertainty: 2.0
+
+# --- Occlusion ---
+occlusion:
+  iou_threshold: 0.65                 # Higher threshold for dark conditions
+  priority_keypoints:
+    - "Snout"
+    - "Tail_Base"
+  smooth_window: 7                    # Longer smoothing window
+
+# --- Pose ---
+pose:
+  sleap_model: "/Users/kuhn/Desktop/sleap/nature_social_data/fig01_behavior/02_MODEL/FVB_2023/labels.v000_run"
+  batch_size: 4
+  peak_threshold: 0.15               # More lenient keypoint threshold in dark
+
+# --- Export ---
+export:
+  output_path: "output_blackbox.slp"
+  low_confidence_threshold: 0.35     # Flag more frames for review
+
+# --- General ---
+device: "mps"
+num_workers: 4
+video_formats:
+  - ".mp4"
+  - ".avi"
+  - ".mov"
+  - ".mkv"
