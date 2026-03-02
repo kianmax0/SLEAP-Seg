@@ -1,14 +1,18 @@
-"""Fused tracker: ByteTrack + OSNet Re-ID for stable multi-animal ID assignment."""
+"""Fused tracker: ByteTrack + OSNet Re-ID for stable multi-animal ID assignment.
+
+Re-ID is optional: if torchreid is not installed, the tracker gracefully falls
+back to pure ByteTrack spatial matching (still robust for most cases).
+"""
 
 from __future__ import annotations
 
+import warnings
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
 from ..perception.yolo_seg import Detection
 from .bytetrack import ByteTracker, Track, TrackState
-from .reid import ReIDExtractor
 
 
 class FusedTracker:
@@ -35,14 +39,24 @@ class FusedTracker:
             mask_iou_weight=tracking_cfg.get("mask_iou_weight", 0.4),
         )
 
-        self.reid = ReIDExtractor(
-            model_name=reid_cfg.get("model", "osnet_x0_25"),
-            weights_path=reid_cfg.get("weights"),
-            embedding_dim=reid_cfg.get("embedding_dim", 512),
-            ema_alpha=reid_cfg.get("ema_alpha", 0.9),
-            cosine_threshold=reid_cfg.get("cosine_threshold", 0.7),
-            device=device,
-        )
+        self.reid = None
+        try:
+            from .reid import ReIDExtractor
+            self.reid = ReIDExtractor(
+                model_name=reid_cfg.get("model", "osnet_x0_25"),
+                weights_path=reid_cfg.get("weights"),
+                embedding_dim=reid_cfg.get("embedding_dim", 512),
+                ema_alpha=reid_cfg.get("ema_alpha", 0.9),
+                cosine_threshold=reid_cfg.get("cosine_threshold", 0.7),
+                device=device,
+            )
+            print("Re-ID (OSNet) loaded successfully.")
+        except (ImportError, Exception) as e:
+            warnings.warn(
+                f"Re-ID disabled ({e}). Tracker will use ByteTrack spatial matching only. "
+                "Install torchreid to enable appearance-based re-association.",
+                stacklevel=2,
+            )
 
         # Track IDs that were LOST before this frame (for re-association)
         self._prev_lost_ids: List[int] = []
@@ -56,34 +70,34 @@ class FusedTracker:
 
         active_tracks = self.byte_tracker.update(detections)
 
-        # Identify newly appeared tracks (could be re-appearances from lost)
-        new_tracks = [
-            t for t in active_tracks
-            if t.frame_id == self.byte_tracker._frame_id and t.lost_frames == 0
-        ]
+        if self.reid is not None:
+            # Identify newly appeared tracks (could be re-appearances from lost)
+            new_tracks = [
+                t for t in active_tracks
+                if t.frame_id == self.byte_tracker._frame_id and t.lost_frames == 0
+            ]
 
-        if new_tracks and prev_lost_ids:
-            masks = [t.mask for t in new_tracks]
-            bboxes = [t.bbox for t in new_tracks]
-            embeddings = self.reid.extract(frame, masks, bboxes)
+            if new_tracks and prev_lost_ids:
+                masks = [t.mask for t in new_tracks]
+                bboxes = [t.bbox for t in new_tracks]
+                embeddings = self.reid.extract(frame, masks, bboxes)
 
-            for track, emb in zip(new_tracks, embeddings):
-                best_id, sim = self.reid.reassociate(prev_lost_ids, emb)
-                if best_id is not None:
-                    # Reassign track ID to the previously lost ID
-                    old_id = track.track_id
-                    track.track_id = best_id
-                    prev_lost_ids.remove(best_id)
-                    self.reid.bank.remove(old_id)
+                for track, emb in zip(new_tracks, embeddings):
+                    best_id, sim = self.reid.reassociate(prev_lost_ids, emb)
+                    if best_id is not None:
+                        old_id = track.track_id
+                        track.track_id = best_id
+                        prev_lost_ids.remove(best_id)
+                        self.reid.bank.remove(old_id)
 
-        # Update Re-ID bank for all active tracks
-        if active_tracks:
-            masks = [t.mask for t in active_tracks]
-            bboxes = [t.bbox for t in active_tracks]
-            embeddings = self.reid.extract(frame, masks, bboxes)
-            self.reid.update_bank(
-                [t.track_id for t in active_tracks], embeddings
-            )
+            # Update Re-ID bank for all active tracks
+            if active_tracks:
+                masks = [t.mask for t in active_tracks]
+                bboxes = [t.bbox for t in active_tracks]
+                embeddings = self.reid.extract(frame, masks, bboxes)
+                self.reid.update_bank(
+                    [t.track_id for t in active_tracks], embeddings
+                )
 
         self._prev_lost_ids = [t.track_id for t in self.byte_tracker.lost_tracks]
 

@@ -108,12 +108,15 @@ def run_visualizer(
 
     seg = build_backend(cfg)
     tracker = FusedTracker(cfg)
-    sleap_infer = SLEAPInferencer(
-        model_path=sleap_model,
-        peak_threshold=cfg["pose"].get("peak_threshold", 0.2),
-        batch_size=cfg["pose"].get("batch_size", 8),
-        device=device,
-    )
+
+    sleap_inferencer = None
+    if sleap_model:
+        sleap_inferencer = SLEAPInferencer(
+            model_path=sleap_model,
+            peak_threshold=cfg["pose"].get("peak_threshold", 0.2),
+            batch_size=cfg["pose"].get("batch_size", 8),
+            device=device,
+        )
     kp_filter = KeypointFilter(
         process_noise=cfg["kalman"].get("process_noise", 1e-2),
         measurement_noise=cfg["kalman"].get("measurement_noise", 1e-1),
@@ -141,14 +144,18 @@ def run_visualizer(
 
         bboxes = [t.bbox for t in tracks]
         tids = [t.track_id for t in tracks]
-        pose_results = sleap_infer.infer(frame, bboxes, tids, frame_id)
-        pose_results = occlusion_handler.process(pose_results, tracks, frame_id)
+
+        if sleap_inferencer is not None and tids:
+            pose_results = sleap_inferencer.infer(frame, bboxes, tids, frame_id)
+            pose_results = occlusion_handler.process(pose_results, tracks, frame_id)
+        else:
+            pose_results = []
 
         occluded_ids = {
             tid
             for pair in occlusion_handler._occluded_pairs
             for tid in pair
-        }
+        } if sleap_inferencer is not None else set()
 
         vis = frame.copy()
         for track in tracks:
@@ -186,17 +193,19 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="SLEAP-Seg debug visualization")
     parser.add_argument("--video", required=True, help="Input video path")
     parser.add_argument("--seg-model", required=True, help="YOLOv8-seg weights path")
-    parser.add_argument("--sleap-model", required=True, help="SLEAP model path")
+    parser.add_argument("--sleap-model", default=None, help="SLEAP model path (optional)")
     parser.add_argument("--config", default="config/default.yaml")
     parser.add_argument("--output", default=None, help="Save visualization to file instead of showing")
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--max-frames", type=int, default=None, help="Limit number of frames processed")
+    parser.add_argument("--skip-sleap", action="store_true", help="Skip SLEAP inference (show seg+tracking only)")
     args = parser.parse_args()
 
+    sleap_model = None if args.skip_sleap else args.sleap_model
     run_visualizer(
         video_path=args.video,
         seg_model=args.seg_model,
-        sleap_model=args.sleap_model,
+        sleap_model=sleap_model,
         config=args.config,
         output=args.output,
         device=args.device,

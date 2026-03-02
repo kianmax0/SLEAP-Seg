@@ -2,13 +2,13 @@
 
 # --- Perception ---
 perception:
-  seg_backend: "yolo+sam"          # "yolo" | "sam" | "yolo+sam"
+  seg_backend: "yolo"              # "yolo" | "sam" | "yolo+sam"
   yolo_model: "models/yolov8n-seg.pt"
   sam_checkpoint: "models/sam_vit_h.pth"
   sam_model_type: "vit_h"
   yolo_imgsz: 640
   yolo_conf: 0.25
-  yolo_fp16: true
+  yolo_fp16: false                 # fp16 not supported on MPS/CPU
   # SAM only triggered when YOLO mask confidence falls below this threshold
   sam_trigger_conf: 0.5
 
@@ -41,14 +41,14 @@ occlusion:
   iou_threshold: 0.6               # Mask IoU above this triggers occlusion mode
   # Keypoints kept with high priority during occlusion (by skeleton node name)
   priority_keypoints:
-    - "nose"
-    - "tail_base"
+    - "Snout"
+    - "Tail_Base"
   smooth_window: 5                 # Frames for linear interpolation window
 
 # --- Pose (SLEAP) ---
 pose:
-  sleap_model: "models/model.pkg.slp"
-  batch_size: 8
+  sleap_model: "/Users/kuhn/Desktop/sleap/nature_social_data/fig01_behavior/02_MODEL/FVB_2023/labels.v000_run"
+  batch_size: 4
   peak_threshold: 0.2
 
 # --- Export ---
@@ -58,7 +58,7 @@ export:
   low_confidence_threshold: 0.4
 
 # --- General ---
-device: "cpu"                      # "cpu" | "cuda:0" | "mps"
+device: "mps"                      # "cpu" | "cuda:0" | "mps"
 num_workers: 4
 video_formats:
   - ".mp4"
