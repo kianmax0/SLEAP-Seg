@@ -1,0 +1,26 @@
+name: sleapSeg
+channels:
+  - pytorch
+  - conda-forge
+  - anaconda
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - numpy>=1.23
+  - scipy>=1.9
+  - h5py>=3.7
+  - pip:
+    - torch
+    - torchvision
+    - ultralytics>=8.0
+    - segment-anything
+    - sleap
+    - filterpy>=1.4
+    - opencv-python>=4.7
+    - click>=8.1
+    - pyyaml>=6.0
+    - tqdm>=4.65
+    - cython
+    - lap>=0.4
+    - git+https://github.com/KaiyangZhou/deep-person-reid.git

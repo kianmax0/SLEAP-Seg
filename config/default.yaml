@@ -1,0 +1,67 @@
+# SLEAP-Seg default configuration
+
+# --- Perception ---
+perception:
+  seg_backend: "yolo+sam"          # "yolo" | "sam" | "yolo+sam"
+  yolo_model: "models/yolov8n-seg.pt"
+  sam_checkpoint: "models/sam_vit_h.pth"
+  sam_model_type: "vit_h"
+  yolo_imgsz: 640
+  yolo_conf: 0.25
+  yolo_fp16: true
+  # SAM only triggered when YOLO mask confidence falls below this threshold
+  sam_trigger_conf: 0.5
+
+# --- Tracking (ByteTrack) ---
+tracking:
+  bytetrack_high_thresh: 0.6
+  bytetrack_low_thresh: 0.1
+  bytetrack_match_thresh: 0.8
+  # Weight split for cost matrix: box_iou vs mask_iou
+  box_iou_weight: 0.6
+  mask_iou_weight: 0.4
+  max_lost_frames: 30              # Frames before a track is deleted
+
+# --- Re-ID ---
+reid:
+  model: "osnet_x0_25"
+  weights: "models/osnet_x0_25_market.pth"
+  embedding_dim: 512
+  cosine_threshold: 0.7            # Min similarity to re-associate a lost track
+  ema_alpha: 0.9                   # Exponential moving average weight for embedding bank
+
+# --- Kalman Filter ---
+kalman:
+  process_noise: 1.0e-2
+  measurement_noise: 1.0e-1
+  initial_uncertainty: 1.0
+
+# --- Occlusion ---
+occlusion:
+  iou_threshold: 0.6               # Mask IoU above this triggers occlusion mode
+  # Keypoints kept with high priority during occlusion (by skeleton node name)
+  priority_keypoints:
+    - "nose"
+    - "tail_base"
+  smooth_window: 5                 # Frames for linear interpolation window
+
+# --- Pose (SLEAP) ---
+pose:
+  sleap_model: "models/model.pkg.slp"
+  batch_size: 8
+  peak_threshold: 0.2
+
+# --- Export ---
+export:
+  output_path: "output.slp"
+  # Frames flagged for review when Re-ID match confidence is below this
+  low_confidence_threshold: 0.4
+
+# --- General ---
+device: "cpu"                      # "cpu" | "cuda:0" | "mps"
+num_workers: 4
+video_formats:
+  - ".mp4"
+  - ".avi"
+  - ".mov"
+  - ".mkv"
