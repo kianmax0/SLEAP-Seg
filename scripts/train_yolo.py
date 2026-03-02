@@ -64,7 +64,7 @@ def convert_labelme_to_yolo(
         print(f"No JSON files found in {labels_dir}")
         sys.exit(1)
 
-    # Discover classes if not specified
+    # Discover classes if not specified (default is ["mouse"])
     if class_names is None:
         found: set = set()
         for jf in json_files:
@@ -73,6 +73,8 @@ def convert_labelme_to_yolo(
                 found.add(s["label"])
         class_names = sorted(found)
         print(f"Discovered {len(class_names)} classes: {class_names}")
+    else:
+        print(f"Using specified classes: {class_names}")
 
     class_to_id = {c: i for i, c in enumerate(class_names)}
 
@@ -221,9 +223,10 @@ def main() -> None:
                         help="Fraction of images for validation (default: 0.1)")
     parser.add_argument("--run-name", default="mice_fvb_seg",
                         help="Name of the training run folder")
-    parser.add_argument("--classes", nargs="+", default=None,
-                        help="Class names in label order (e.g. --classes mouse_1 mouse_2). "
-                             "If omitted, discovered automatically from JSON files.")
+    parser.add_argument("--classes", nargs="+", default=["mouse"],
+                        help="Class names in label order. Default: ['mouse']. "
+                             "All mice use the same label regardless of identity — "
+                             "individual IDs are assigned by the ByteTrack/Re-ID layer at inference time.")
     parser.add_argument("--convert-only", action="store_true",
                         help="Only convert annotations; skip training.")
     parser.add_argument("--copy-model", type=Path, default=Path("models/yolov8_mice.pt"),
