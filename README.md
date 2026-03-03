@@ -1,6 +1,6 @@
 # SLEAP-Seg
 
-A segmentation-guided pose estimation pipeline for multi-animal tracking. Combines **YOLOv8-seg** instance segmentation with **ByteTrack + OSNet Re-ID** tracking and **SLEAP-NN** keypoint inference — eliminating ID switches and keypoint jitter in multi-animal behavioral analysis.
+A segmentation-guided pose estimation pipeline for multi-animal tracking. Combines **YOLOv8-seg** instance segmentation with **ByteTrack + OSNet Re-ID** tracking and **SLEAP-NN** keypoint inference — eliminating ID switches and keypoint jitter in multi-animal behavioral analysis..
 
 ## Problem
 
