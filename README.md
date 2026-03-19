@@ -104,7 +104,7 @@ Follow this workflow to train a custom model:
 python scripts/extract_frames.py \
     --folder /path/to/videos/ \
     --target 200 \
-    --output frames_to_label/
+    --output data/frames_to_label/
 ```
 
 ### Step 2: Annotate with LabelMe
@@ -113,21 +113,21 @@ See **[LABELING_GUIDE.md](LABELING_GUIDE.md)** for detailed instructions.
 
 ```bash
 pip install "labelme[ai]"
-labelme frames_to_label/
+labelme data/frames_to_label/
 ```
 
-Use labels `mouse_1`, `mouse_2` (lower-case, underscore).
-Aim for **≥ 30% of frames with occlusion**.
+Use the single label **`mouse`** for every animal (no `mouse_1` / `mouse_2`). When two mice overlap, one SAM/magic-wand polygon for the merged blob is fine. Aim for **≥ 30% of frames** with contact or occlusion.
 
 ### Step 3: Train
 
 ```bash
 python scripts/train_yolo.py \
-    --labels frames_to_label/ \
-    --classes mouse_1 mouse_2 \
+    --labels data/frames_to_label/ \
     --epochs 100 \
     --device mps
 ```
+
+(`--classes` defaults to `mouse`; omit it unless you use a different class name.)
 
 The script auto-converts annotations, trains, and updates `config/default.yaml`.
 

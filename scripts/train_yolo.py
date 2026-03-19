@@ -4,13 +4,13 @@ Usage:
 
   # Convert + train in one step
   python scripts/train_yolo.py \\
-      --labels frames_to_label/ \\
+      --labels data/frames_to_label/ \\
       --output runs/mice_seg/ \\
       --base-model models/yolov8n-seg.pt \\
       --epochs 100
 
   # Only convert (skip training)
-  python scripts/train_yolo.py --labels frames_to_label/ --output dataset/ --convert-only
+  python scripts/train_yolo.py --labels data/frames_to_label/ --output dataset/ --convert-only
 """
 
 from __future__ import annotations
