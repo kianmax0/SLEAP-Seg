@@ -5,13 +5,12 @@ from __future__ import annotations
 import argparse
 import random
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import cv2
 import numpy as np
 
 
-# Colour palette (BGR) for up to 20 track IDs
 _PALETTE = [
     (random.randint(80, 255), random.randint(80, 255), random.randint(80, 255))
     for _ in range(20)
@@ -87,7 +86,7 @@ def draw_keypoints(
 def run_visualizer(
     video_path: str,
     seg_model: str,
-    sleap_model: str,
+    sleap_model: Optional[str],
     config: str = "config/default.yaml",
     output: Optional[str] = None,
     device: str = "cpu",
@@ -95,33 +94,23 @@ def run_visualizer(
 ) -> None:
     import yaml
     from sleap_seg.perception.seg_backend import build_backend
+    from sleap_seg.pipeline import Pipeline
+    from sleap_seg.state.frame_state import FrameState
     from sleap_seg.tracking.tracker import FusedTracker
-    from sleap_seg.pose.sleap_infer import SLEAPInferencer
-    from sleap_seg.pose.keypoint_filter import KeypointFilter
-    from sleap_seg.occlusion.occlusion_handler import OcclusionHandler
 
     with open(config) as f:
         cfg = yaml.safe_load(f)
     cfg["perception"]["yolo_model"] = seg_model
-    cfg["pose"]["sleap_model"] = sleap_model
+    cfg["pose"]["sleap_model"] = sleap_model or ""
     cfg["device"] = device
 
-    seg = build_backend(cfg)
-    tracker = FusedTracker(cfg)
-
-    sleap_inferencer = None
     if sleap_model:
-        sleap_inferencer = SLEAPInferencer(
-            model_path=sleap_model,
-            peak_threshold=cfg["pose"].get("peak_threshold", 0.2),
-            batch_size=cfg["pose"].get("batch_size", 8),
-            device=device,
-        )
-    kp_filter = KeypointFilter(
-        process_noise=cfg["kalman"].get("process_noise", 1e-2),
-        measurement_noise=cfg["kalman"].get("measurement_noise", 1e-1),
-    )
-    occlusion_handler = OcclusionHandler(cfg)
+        pipeline = Pipeline(cfg)
+        seg = tracker = None
+    else:
+        pipeline = None
+        seg = build_backend(cfg)
+        tracker = FusedTracker(cfg)
 
     cap = cv2.VideoCapture(video_path)
     writer: Optional[cv2.VideoWriter] = None
@@ -138,24 +127,21 @@ def run_visualizer(
         if not ret or (max_frames and frame_id >= max_frames):
             break
 
-        detections = seg.detect(frame)
-        tracks = tracker.update(frame, detections)
+        if pipeline is not None:
+            pose_results, _ = pipeline.process_frame(frame, frame_id)
+            tracks = pipeline.last_active_tracks
+            st = pipeline.last_frame_state
+        else:
+            detections = seg.detect(frame)
+            tracks = tracker.update(frame, detections)
+            pose_results = []
+            st = None
+
         mask_by_id = {t.track_id: t.mask for t in tracks}
 
-        bboxes = [t.bbox for t in tracks]
-        tids = [t.track_id for t in tracks]
-
-        if sleap_inferencer is not None and tids:
-            pose_results = sleap_inferencer.infer(frame, bboxes, tids, frame_id)
-            pose_results = occlusion_handler.process(pose_results, tracks, frame_id)
-        else:
-            pose_results = []
-
-        occluded_ids = {
-            tid
-            for pair in occlusion_handler._occluded_pairs
-            for tid in pair
-        } if sleap_inferencer is not None else set()
+        occluded_ids = set()
+        if st in (FrameState.MERGED_BLOB, FrameState.PAIRWISE_OCCLUSION):
+            occluded_ids = {t.track_id for t in tracks}
 
         vis = frame.copy()
         for track in tracks:
@@ -164,11 +150,13 @@ def run_visualizer(
 
         for result in pose_results:
             mask = mask_by_id.get(result.track_id)
-            result = kp_filter.filter(result, mask)
+            if mask is None and tracks:
+                mask = tracks[0].mask
             vis = draw_keypoints(vis, result.keypoints, result.track_id)
 
+        state_lbl = f" | {st.name}" if st is not None else ""
         cv2.putText(
-            vis, f"Frame {frame_id}", (10, 28),
+            vis, f"Frame {frame_id}{state_lbl}", (10, 28),
             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2
         )
 

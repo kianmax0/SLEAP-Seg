@@ -147,8 +147,9 @@ class KeypointFilter:
         self,
         pose_result: PoseResult,
         mask: Optional[np.ndarray],
+        apply_mask: bool = True,
     ) -> PoseResult:
-        if mask is not None:
+        if apply_mask and mask is not None:
             pose_result = apply_mask_constraint(pose_result, mask)
         pose_result = self.kalman.predict_and_update(pose_result)
         return pose_result

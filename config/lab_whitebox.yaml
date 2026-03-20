@@ -59,6 +59,15 @@ export:
   output_path: "output_whitebox.slp"
   low_confidence_threshold: 0.4
 
+# --- V2 pipeline state ---
+pipeline:
+  expected_mice: 2
+  assignment:
+    use_temporal_in_occlusion: true
+  occlusion:
+    nan_after_frames: 15
+    disable_mask_constraint_when_risky: true
+
 # --- General ---
 device: "mps"
 num_workers: 4

@@ -60,6 +60,15 @@ export:
   output_path: "output_blackbox.slp"
   low_confidence_threshold: 0.35     # Flag more frames for review
 
+# --- V2 pipeline state ---
+pipeline:
+  expected_mice: 2
+  assignment:
+    use_temporal_in_occlusion: true
+  occlusion:
+    nan_after_frames: 20
+    disable_mask_constraint_when_risky: true
+
 # --- General ---
 device: "mps"
 num_workers: 4

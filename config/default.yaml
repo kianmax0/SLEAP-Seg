@@ -57,6 +57,15 @@ export:
   # Frames flagged for review when Re-ID match confidence is below this
   low_confidence_threshold: 0.4
 
+# --- V2 pipeline state (temporal assignment, merged-blob, NaN cap) ---
+pipeline:
+  expected_mice: 2
+  assignment:
+    use_temporal_in_occlusion: true   # MERGED_BLOB / PAIRWISE: use t-1 keypoints + Hungarian
+  occlusion:
+    nan_after_frames: 15              # 0 = disable; after this many consecutive risky frames, emit NaN keypoints
+    disable_mask_constraint_when_risky: true  # skip mask QC when merged or pairwise overlapping
+
 # --- General ---
 device: "mps"                      # "cpu" | "cuda:0" | "mps"
 num_workers: 4

@@ -93,8 +93,99 @@ def _empty_pose_result(
 
 # ─────────────────── Association: SLEAP instances → track IDs ─────────────────
 
+_COST_INVALID = 1e12
+
+
 def _bbox_center(bbox: np.ndarray) -> Tuple[float, float]:
     return float((bbox[0] + bbox[2]) / 2), float((bbox[1] + bbox[3]) / 2)
+
+
+def _inst_centroid(inst: Any) -> np.ndarray:
+    pts = []
+    for pt in inst.points:
+        x = float(pt.x) if hasattr(pt, "x") else float(pt[0])
+        y = float(pt.y) if hasattr(pt, "y") else float(pt[1])
+        if not (np.isnan(x) or np.isnan(y)):
+            pts.append((x, y))
+    if pts:
+        return np.mean(np.asarray(pts, dtype=np.float64), axis=0)
+    return np.array([np.nan, np.nan], dtype=np.float64)
+
+
+def _spatial_cost_matrix(
+    sleap_instances: List[Any],
+    bboxes: List[np.ndarray],
+) -> np.ndarray:
+    n_t, n_i = len(bboxes), len(sleap_instances)
+    C = np.full((n_t, n_i), _COST_INVALID, dtype=np.float64)
+    track_centers = np.array([_bbox_center(bb) for bb in bboxes])
+    for ti in range(n_t):
+        for ii in range(n_i):
+            ic = _inst_centroid(sleap_instances[ii])
+            if not np.any(np.isnan(ic)):
+                C[ti, ii] = float(np.linalg.norm(track_centers[ti] - ic))
+    return C
+
+
+def _temporal_cost_matrix(
+    sleap_instances: List[Any],
+    track_ids: List[int],
+    prev_poses: Dict[int, PoseResult],
+) -> np.ndarray:
+    n_t, n_i = len(track_ids), len(sleap_instances)
+    C = np.full((n_t, n_i), _COST_INVALID, dtype=np.float64)
+    for ti in range(n_t):
+        tid = track_ids[ti]
+        prev = prev_poses.get(tid)
+        if prev is None:
+            continue
+        for ii in range(n_i):
+            inst = sleap_instances[ii]
+            dists: List[float] = []
+            for i, pt in enumerate(inst.points):
+                if i >= len(prev.keypoints):
+                    break
+                x = float(pt.x) if hasattr(pt, "x") else float(pt[0])
+                y = float(pt.y) if hasattr(pt, "y") else float(pt[1])
+                pk = prev.keypoints[i]
+                if np.isnan(x) or np.isnan(y) or np.isnan(pk.x) or np.isnan(pk.y):
+                    continue
+                dists.append(float(np.hypot(x - pk.x, y - pk.y)))
+            if dists:
+                C[ti, ii] = float(np.mean(dists))
+    return C
+
+
+def _hungarian_assignment(C: np.ndarray) -> Dict[int, int]:
+    """Min-cost one-to-one matching; returns {track_row_idx: instance_col_idx}."""
+    try:
+        from scipy.optimize import linear_sum_assignment
+    except ImportError:
+        return {}
+
+    row_ind, col_ind = linear_sum_assignment(C)
+    out: Dict[int, int] = {}
+    for ri, ci in zip(row_ind, col_ind):
+        if C[ri, ci] < _COST_INVALID * 0.5:
+            out[int(ri)] = int(ci)
+    return out
+
+
+def _greedy_assignment(C: np.ndarray) -> Dict[int, int]:
+    """Greedy min-cost fallback when scipy is unavailable."""
+    n_t, n_i = C.shape
+    assigned: Dict[int, int] = {}
+    CC = C.copy()
+    for _ in range(min(n_t, n_i)):
+        if np.all(CC >= _COST_INVALID * 0.5):
+            break
+        ti, ii = np.unravel_index(np.argmin(CC), CC.shape)
+        if CC[ti, ii] >= _COST_INVALID * 0.5:
+            break
+        assigned[int(ti)] = int(ii)
+        CC[ti, :] = _COST_INVALID
+        CC[:, ii] = _COST_INVALID
+    return assigned
 
 
 def _assign_instances_to_tracks(
@@ -104,49 +195,32 @@ def _assign_instances_to_tracks(
     track_ids: List[int],
     frame_id: int,
     peak_threshold: float = 0.2,
+    assignment_mode: str = "spatial",
+    prev_poses: Optional[Dict[int, PoseResult]] = None,
 ) -> List[PoseResult]:
-    """Greedy nearest-centroid matching of SLEAP instances to ByteTrack boxes."""
+    """Match SLEAP instances to tracks via Hungarian (spatial or temporal cost)."""
     n_tracks = len(track_ids)
     n_inst = len(sleap_instances)
 
     if n_inst == 0:
         return [_empty_pose_result(tid, node_names, frame_id) for tid in track_ids]
 
-    track_centers = np.array([_bbox_center(bb) for bb in bboxes])  # (T, 2)
+    C_spatial = _spatial_cost_matrix(sleap_instances, bboxes)
 
-    inst_centers = []
-    for inst in sleap_instances:
-        pts = []
-        for pt in inst.points:
-            x = float(pt.x) if hasattr(pt, "x") else float(pt[0])
-            y = float(pt.y) if hasattr(pt, "y") else float(pt[1])
-            if not (np.isnan(x) or np.isnan(y)):
-                pts.append((x, y))
-        if pts:
-            inst_centers.append(np.mean(pts, axis=0))
-        else:
-            inst_centers.append(np.array([float("nan"), float("nan")]))
-    inst_centers = np.array(inst_centers)
+    if assignment_mode == "temporal" and prev_poses:
+        C_temp = _temporal_cost_matrix(sleap_instances, track_ids, prev_poses)
+        C = np.where(C_temp < _COST_INVALID * 0.5, C_temp, C_spatial)
+    else:
+        C = C_spatial
 
-    assigned: Dict[int, int] = {}
-    dist_matrix = np.full((n_tracks, n_inst), np.inf)
-    for ti in range(n_tracks):
-        for ii in range(n_inst):
-            if not np.any(np.isnan(inst_centers[ii])):
-                dist_matrix[ti, ii] = np.linalg.norm(track_centers[ti] - inst_centers[ii])
-
-    for _ in range(min(n_tracks, n_inst)):
-        if np.all(np.isinf(dist_matrix)):
-            break
-        ti, ii = np.unravel_index(np.argmin(dist_matrix), dist_matrix.shape)
-        assigned[int(ti)] = int(ii)
-        dist_matrix[ti, :] = np.inf
-        dist_matrix[:, ii] = np.inf
+    assign = _hungarian_assignment(C)
+    if not assign:
+        assign = _greedy_assignment(C)
 
     results: List[PoseResult] = []
     for ti, tid in enumerate(track_ids):
-        if ti in assigned:
-            inst = sleap_instances[assigned[ti]]
+        if ti in assign:
+            inst = sleap_instances[assign[ti]]
             keypoints = []
             for node_name, pt in zip(node_names, inst.points):
                 x = float(pt.x) if hasattr(pt, "x") else float(pt[0])
@@ -327,8 +401,17 @@ class SLEAPInferencer:
         bboxes: List[np.ndarray],
         track_ids: List[int],
         frame_id: int = 0,
+        *,
+        assignment_mode: str = "spatial",
+        prev_poses: Optional[Dict[int, PoseResult]] = None,
     ) -> List[PoseResult]:
-        """Run inference on a full frame and associate results to track IDs."""
+        """Run inference on a full frame and associate results to track IDs.
+
+        assignment_mode:
+          - ``spatial``: bbox-centroid vs skeleton-centroid (Hungarian).
+          - ``temporal``: mean keypoint displacement vs previous frame (Hungarian),
+            with spatial fallback where temporal cost is undefined.
+        """
         if not track_ids:
             return []
 
@@ -337,11 +420,17 @@ class SLEAPInferencer:
 
         try:
             if self._backend == "cache":
-                return self._infer_from_cache(bboxes, track_ids, frame_id)
+                return self._infer_from_cache(
+                    bboxes, track_ids, frame_id, assignment_mode, prev_poses
+                )
             elif self._backend == "sleap-nn":
-                return self._infer_sleap_nn(frame, bboxes, track_ids, frame_id)
+                return self._infer_sleap_nn(
+                    frame, bboxes, track_ids, frame_id, assignment_mode, prev_poses
+                )
             elif self._backend == "sleap-legacy":
-                return self._infer_legacy(frame, bboxes, track_ids, frame_id)
+                return self._infer_legacy(
+                    frame, bboxes, track_ids, frame_id, assignment_mode, prev_poses
+                )
         except Exception as e:
             warnings.warn(f"Inference failed on frame {frame_id}: {e}", stacklevel=2)
 
@@ -352,6 +441,8 @@ class SLEAPInferencer:
         bboxes: List[np.ndarray],
         track_ids: List[int],
         frame_id: int,
+        assignment_mode: str = "spatial",
+        prev_poses: Optional[Dict[int, PoseResult]] = None,
     ) -> List[PoseResult]:
         """Return keypoints from pre-computed NPZ cache."""
         assert self._cache is not None
@@ -371,7 +462,14 @@ class SLEAPInferencer:
 
         instances = _kps_array_to_pseudo_instances(np.stack(valid), self._node_names)
         return _assign_instances_to_tracks(
-            instances, self._node_names, bboxes, track_ids, frame_id, self.peak_threshold
+            instances,
+            self._node_names,
+            bboxes,
+            track_ids,
+            frame_id,
+            self.peak_threshold,
+            assignment_mode=assignment_mode,
+            prev_poses=prev_poses,
         )
 
     def _infer_sleap_nn(
@@ -380,6 +478,8 @@ class SLEAPInferencer:
         bboxes: List[np.ndarray],
         track_ids: List[int],
         frame_id: int,
+        assignment_mode: str = "spatial",
+        prev_poses: Optional[Dict[int, PoseResult]] = None,
     ) -> List[PoseResult]:
         """Per-frame inference using sleap-nn BottomUpPredictor (Python 3.11+)."""
         import sleap_io as sio  # type: ignore
@@ -437,7 +537,14 @@ class SLEAPInferencer:
             pseudo.append(_Inst(pts))
 
         return _assign_instances_to_tracks(
-            pseudo, self._node_names, bboxes, track_ids, frame_id, self.peak_threshold
+            pseudo,
+            self._node_names,
+            bboxes,
+            track_ids,
+            frame_id,
+            self.peak_threshold,
+            assignment_mode=assignment_mode,
+            prev_poses=prev_poses,
         )
 
     def _infer_legacy(
@@ -446,6 +553,8 @@ class SLEAPInferencer:
         bboxes: List[np.ndarray],
         track_ids: List[int],
         frame_id: int,
+        assignment_mode: str = "spatial",
+        prev_poses: Optional[Dict[int, PoseResult]] = None,
     ) -> List[PoseResult]:
         """Per-frame inference using legacy TF SLEAP."""
         import sleap  # type: ignore
@@ -460,7 +569,14 @@ class SLEAPInferencer:
             all_instances = list(labeled_frames[0].instances)
 
         return _assign_instances_to_tracks(
-            all_instances, self._node_names, bboxes, track_ids, frame_id, self.peak_threshold
+            all_instances,
+            self._node_names,
+            bboxes,
+            track_ids,
+            frame_id,
+            self.peak_threshold,
+            assignment_mode=assignment_mode,
+            prev_poses=prev_poses,
         )
 
 

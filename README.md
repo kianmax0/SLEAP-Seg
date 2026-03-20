@@ -23,6 +23,20 @@ Video → [YOLOv8-seg] → [ByteTrack + OSNet Re-ID] → [SLEAP-NN] → .slp out
 | Pose | SLEAP-NN (.ckpt) or legacy SLEAP (.h5) | Keypoint inference with mask constraints |
 | Post-proc | Kalman filter, linear interpolation | Smooth keypoints during occlusion |
 
+### V2 pipeline state (three-state + temporal assignment)
+
+The pipeline classifies each frame into one of three **states** (see `config/default.yaml` → `pipeline:`):
+
+| State | When | Behavior |
+|-------|------|----------|
+| **PEACE** | Multiple distinct detections, masks not heavily overlapping | Spatial (Hungarian) assignment of SLEAP instances to tracks; normal mask QC. |
+| **MERGED_BLOB** | Exactly one YOLO detection while `expected_mice ≥ 2` | A second logical track uses a **ghost** view (same bbox/mask as the single detection); temporal assignment to SLEAP instances when prior poses exist. |
+| **PAIRWISE_OCCLUSION** | ≥2 tracks with mask IoU ≥ `occlusion.iou_threshold` | Temporal assignment when enabled; optional **skip mask constraint** in risky states. |
+
+**Sticky IDs**: When two animals are clearly separated (`PEACE` with enough active tracks), the pipeline remembers two stable `track_id`s for merged-blob mode. **Warm-up**: until two distinct tracks appear at least once, merged mode may run in a degraded single-view path.
+
+**Long occlusion**: If `pipeline.occlusion.nan_after_frames > 0`, after that many consecutive non-`PEACE` frames, keypoints are forced to NaN for that frame (no guess).
+
 ---
 
 ## Installation

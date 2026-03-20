@@ -1,28 +1,29 @@
-"""Main pipeline orchestrator: frame-loop connecting all modules."""
+"""Main pipeline orchestrator: frame-loop connecting all modules (V2 state-aware)."""
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-import cv2
-import numpy as np
 from tqdm import tqdm
 
-from .perception.seg_backend import build_backend
-from .tracking.tracker import FusedTracker
-from .pose.sleap_infer import SLEAPInferencer
-from .pose.keypoint_filter import KeypointFilter
-from .occlusion.occlusion_handler import OcclusionHandler
 from .export.slp_exporter import SLPExporter
+from .occlusion.occlusion_handler import OcclusionHandler
+from .pose.keypoint_filter import KeypointFilter
+from .pose.sleap_infer import PoseResult, SLEAPInferencer
+from .perception.seg_backend import build_backend
+from .state.frame_state import FrameState, build_pose_track_views, compute_frame_state
+from .tracking.bytetrack import Track
+from .tracking.tracker import FusedTracker
 
 
 class Pipeline:
     """End-to-end SLEAP-Seg pipeline.
 
     Orchestrates:
-      Perception → Tracking → Occlusion detection →
-      SLEAP inference → Keypoint filtering → Export
+      Perception → Tracking → FrameState → PoseTrack expansion →
+      SLEAP inference (spatial/temporal assignment) → OcclusionHandler →
+      Mask (optional) + Kalman → Export
     """
 
     def __init__(self, cfg: Dict[str, Any]) -> None:
@@ -31,6 +32,7 @@ class Pipeline:
         pose_cfg = cfg.get("pose", {})
         export_cfg = cfg.get("export", {})
         kalman_cfg = cfg.get("kalman", {})
+        pipeline_cfg = cfg.get("pipeline", {})
 
         self.seg_backend = build_backend(cfg)
         self.tracker = FusedTracker(cfg)
@@ -47,7 +49,22 @@ class Pipeline:
         )
         self.occlusion_handler = OcclusionHandler(cfg)
 
-        # Exporter is created per-run in run()
+        self._expected_mice: int = int(pipeline_cfg.get("expected_mice", 2))
+        self._use_temporal_in_occlusion: bool = bool(
+            pipeline_cfg.get("assignment", {}).get("use_temporal_in_occlusion", True)
+        )
+        self._disable_mask_when_risky: bool = bool(
+            pipeline_cfg.get("occlusion", {}).get(
+                "disable_mask_constraint_when_risky", True
+            )
+        )
+
+        self._sticky_track_ids: List[int] = []
+        self._prev_poses: Dict[int, PoseResult] = {}
+        self._risk_streak: int = 0
+        self._last_frame_state: Optional[FrameState] = None
+        self._last_active_tracks: List[Track] = []
+
         self._exporter: Optional[SLPExporter] = None
         self._output_path: str = export_cfg.get("output_path", "output.slp")
         self._low_conf_threshold: float = export_cfg.get("low_confidence_threshold", 0.4)
@@ -64,7 +81,6 @@ class Pipeline:
         fps = cap.get(cv2.CAP_PROP_FPS)
         print(f"Processing {Path(video_path).name} — {total_frames} frames @ {fps:.1f} FPS")
 
-        # Skeleton node names come from the SLEAP model
         skeleton_names = self.sleap._node_names
 
         self._exporter = SLPExporter(
@@ -92,41 +108,110 @@ class Pipeline:
         self._exporter.flush()
         print(f"Done. {self._exporter.flagged_frame_count} frames flagged for review.")
 
-    def _process_frame(self, frame: np.ndarray, frame_id: int):
-        """Run one frame through the full pipeline. Returns (pose_results, reid_confs)."""
-        # 1. Segmentation
+    def _process_frame(
+        self, frame: Any, frame_id: int
+    ) -> Tuple[List[PoseResult], Dict[int, float]]:
+        """Run one frame through the full V2 pipeline."""
         detections = self.seg_backend.detect(frame)
-
-        # 2. Tracking (ByteTrack + Re-ID)
         active_tracks = self.tracker.update(frame, detections)
 
+        frame_state = compute_frame_state(detections, active_tracks, self.cfg)
+        self._last_frame_state = frame_state
+
+        if (
+            frame_state == FrameState.PEACE
+            and len(active_tracks) >= self._expected_mice
+        ):
+            self._sticky_track_ids = sorted(t.track_id for t in active_tracks)[
+                : self._expected_mice
+            ]
+
+        if frame_state == FrameState.PEACE:
+            self._risk_streak = 0
+        else:
+            self._risk_streak += 1
+
         if not active_tracks:
+            self._prev_poses = {}
+            self._last_active_tracks = []
             return [], {}
 
-        # Build a lookup from track_id to mask
+        self._last_active_tracks = list(active_tracks)
+
+        views = build_pose_track_views(
+            active_tracks,
+            frame_state,
+            self._sticky_track_ids,
+            self._expected_mice,
+        )
+        bboxes = [v.bbox for v in views]
+        track_ids = [v.track_id for v in views]
+
+        use_temporal = (
+            self._use_temporal_in_occlusion
+            and frame_state
+            in (FrameState.MERGED_BLOB, FrameState.PAIRWISE_OCCLUSION)
+            and bool(self._prev_poses)
+        )
+        assignment_mode = "temporal" if use_temporal else "spatial"
+
+        pose_results = self.sleap.infer(
+            frame,
+            bboxes,
+            track_ids,
+            frame_id,
+            assignment_mode=assignment_mode,
+            prev_poses=self._prev_poses if use_temporal else None,
+        )
+
+        pose_results = self.occlusion_handler.process(
+            pose_results,
+            active_tracks,
+            frame_id,
+            frame_state=frame_state,
+            risk_streak=self._risk_streak,
+        )
+
+        risky = frame_state in (
+            FrameState.MERGED_BLOB,
+            FrameState.PAIRWISE_OCCLUSION,
+        )
+        apply_mask = not (self._disable_mask_when_risky and risky)
+
         mask_by_id = {t.track_id: t.mask for t in active_tracks}
+        for v in views:
+            if v.track_id not in mask_by_id:
+                mask_by_id[v.track_id] = v.mask
 
-        # 3. SLEAP inference on each crop
-        bboxes = [t.bbox for t in active_tracks]
-        track_ids = [t.track_id for t in active_tracks]
-        pose_results = self.sleap.infer(frame, bboxes, track_ids, frame_id)
-
-        # 4. Occlusion detection & smoothing
-        pose_results = self.occlusion_handler.process(pose_results, active_tracks, frame_id)
-
-        # 5. Mask constraint + Kalman interpolation
-        filtered_results = []
+        filtered_results: List[PoseResult] = []
         for result in pose_results:
             mask = mask_by_id.get(result.track_id)
-            result = self.kp_filter.filter(result, mask)
+            result = self.kp_filter.filter(result, mask, apply_mask=apply_mask)
             filtered_results.append(result)
 
-        # 6. Collect Re-ID confidences from the fused tracker
-        reid_confs = {}
-        for tid in track_ids:
-            emb = self.tracker.reid.bank.get(tid)
-            if emb is not None:
-                # Use self-similarity as a proxy for track stability (1.0 = stable)
-                reid_confs[tid] = float(self.tracker.reid.bank.similarity(emb, tid))
+        self._prev_poses = {r.track_id: r for r in filtered_results}
+
+        reid_confs: Dict[int, float] = {}
+        if self.tracker.reid is not None:
+            for tid in track_ids:
+                emb = self.tracker.reid.bank.get(tid)
+                if emb is not None:
+                    reid_confs[tid] = float(self.tracker.reid.bank.similarity(emb, tid))
 
         return filtered_results, reid_confs
+
+    def process_frame(
+        self, frame: Any, frame_id: int
+    ) -> Tuple[List[PoseResult], Dict[int, float]]:
+        """Public API for single-frame processing (e.g. visualize script)."""
+        return self._process_frame(frame, frame_id)
+
+    @property
+    def last_frame_state(self) -> Optional[FrameState]:
+        """Last computed FrameState (PEACE / MERGED_BLOB / PAIRWISE_OCCLUSION)."""
+        return self._last_frame_state
+
+    @property
+    def last_active_tracks(self) -> List[Track]:
+        """ByteTrack output for the last processed frame (before ghost expansion)."""
+        return self._last_active_tracks
